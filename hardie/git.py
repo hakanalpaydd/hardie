@@ -64,8 +64,17 @@ class GitOperations:
         logger.info(colored("Recovery successful!", Colors.GREEN))
         return True
 
-    def commit_changes(self, issue_type: str, amend: bool = False) -> bool:
-        """Commit any pending changes using git commit (fast)."""
+    def commit_changes(self, issue_type: str, amend: bool = True) -> bool:
+        """Commit any pending changes using git commit.
+
+        Defaults to amending the previous commit (amend=True) because:
+        1. Auto-fixes are small, mechanical changes that don't need separate commits
+        2. Amending creates 'abandoned commits' that git-branchless restack handles natively
+        3. This matches Graphite CLI's default behavior (gt modify amends by default)
+        4. Results in cleaner git history without 'fix: auto-fix' commit spam
+
+        Set amend=False only if you specifically need a separate commit for the fix.
+        """
         if self.config.dry_run:
             logger.info(colored("[DRY RUN] Would commit changes", Colors.YELLOW))
             return True
@@ -82,7 +91,7 @@ class GitOperations:
             if result.returncode != 0:
                 logger.error(f"Failed to amend commit: {result.stderr}")
                 return False
-            logger.info(colored("Amended commit", Colors.GREEN))
+            logger.info(colored("✓ Amended commit with fixes", Colors.GREEN))
         else:
             commit_msg = f"fix: address {issue_type} issues (auto-fix)"
             result = self.run_command(["git", "commit", "-m", commit_msg])
@@ -120,7 +129,15 @@ class GitOperations:
                 logger.warning(f"Could not clear stale sync state: {e}")
 
     def _restack_with_branchless(self) -> bool:
-        """Restack using git-branchless (does in-memory rebases)."""
+        """Restack using git-branchless (does in-memory rebases).
+
+        This is the PRIMARY method for updating child branches after amending commits.
+        Since commit_changes() now amends by default, this creates 'abandoned commits'
+        which git-branchless restack is specifically designed to handle.
+
+        Fallback: If this fails (e.g., new commits were added instead of amended),
+        use _move_child_branches() to move the entire subtree.
+        """
         logger.info("Restacking with git-branchless...")
         result = self.run_command(
             ["git-branchless", "restack", "--in-memory"],
@@ -139,6 +156,52 @@ class GitOperations:
         logger.info(colored("✓ git-branchless restack complete", Colors.GREEN))
         return True
 
+    def _move_child_branches(self, current_branch: str, stack_branches: list[str]) -> bool:
+        """Move child branches onto the current HEAD using git-branchless move.
+
+        This is needed after adding new commits to a parent branch, because
+        git-branchless restack only handles 'abandoned' commits (from --amend),
+        not divergent branches from new commits.
+
+        Uses: git-branchless move -b <next_child_branch> -d HEAD
+        This moves the child branch AND all its descendants onto HEAD.
+        """
+        if current_branch not in stack_branches:
+            logger.warning(f"Current branch {current_branch} not in stack: {stack_branches}")
+            return True  # Nothing to do
+
+        current_idx = stack_branches.index(current_branch)
+
+        # If we're on the last branch, no children to move
+        if current_idx >= len(stack_branches) - 1:
+            logger.info(f"Branch {current_branch} is the last in stack - no children to move")
+            return True
+
+        # Get the immediate child branch
+        next_branch = stack_branches[current_idx + 1]
+        logger.info(f"Moving child branch {next_branch} (and descendants) onto HEAD...")
+
+        # Use git-branchless move with -b (base) to move the entire subtree
+        result = self.run_command(
+            ["git-branchless", "move", "-b", next_branch, "-d", "HEAD"],
+            timeout=180
+        )
+
+        if result.returncode != 0:
+            logger.warning(f"git-branchless move failed: {result.stderr}")
+            # Try with --merge flag to handle conflicts
+            logger.info("Retrying with --merge flag...")
+            result = self.run_command(
+                ["git-branchless", "move", "-b", next_branch, "-d", "HEAD", "--merge"],
+                timeout=300
+            )
+            if result.returncode != 0:
+                logger.error(f"git-branchless move --merge failed: {result.stderr}")
+                return False
+
+        logger.info(colored(f"✓ Moved {next_branch} and descendants onto HEAD", Colors.GREEN))
+        return True
+
     def _submit_with_branchless(self, stack_branches: list[str]) -> bool:
         """Submit (push) branches using git-branchless submit."""
         logger.info("Submitting with git-branchless...")
@@ -153,7 +216,15 @@ class GitOperations:
         return True
 
     def push_stack(self, current_branch: Optional[str] = None) -> bool:
-        """Push all changes in the stack using git-branchless."""
+        """Push all changes in the stack using git-branchless.
+
+        Strategy (hybrid approach for maximum reliability):
+        1. Try git-branchless restack first - handles 'abandoned commits' from --amend
+           (This is the preferred path since commit_changes() now amends by default)
+        2. If restack doesn't update anything, try git-branchless move for child branches
+           (Handles edge cases where new commits were added instead of amended)
+        3. Push all branches using git-branchless submit or fallback to git push
+        """
         if self.config.dry_run:
             logger.info(colored("[DRY RUN] Would push stack", Colors.YELLOW))
             return True
@@ -169,15 +240,23 @@ class GitOperations:
 
         logger.info(f"Stack has {len(stack_branches)} branches: {stack_branches}")
 
-        is_last_branch = current_branch and stack_branches and current_branch == stack_branches[-1]
+        # Step 1: Try restack first (handles abandoned commits from --amend)
+        # This is the primary path since commit_changes() now amends by default
+        if not self._restack_with_branchless():
+            logger.warning("git-branchless restack failed")
+            # Step 2: Fallback to move (handles new commits added to parent branch)
+            if current_branch:
+                if not self._move_child_branches(current_branch, stack_branches):
+                    logger.error("Both restack and move failed - stack may be in inconsistent state")
+                    return False
 
-        if is_last_branch:
-            logger.info(f"Branch {current_branch} is the last in stack - no restack needed")
-        else:
-            logger.info(f"Branch {current_branch} is not the last in stack - must restack")
-            if not self._restack_with_branchless():
-                return False
+        # Re-fetch stack branches after restack/move (commits may have new hashes)
+        stack_branches = self.get_stack_branches()
+        if not stack_branches:
+            logger.error("Could not determine stack branches after restack/move")
+            return False
 
+        # Step 3: Push all branches
         if not self._submit_with_branchless(stack_branches):
             logger.warning("git-branchless submit failed, falling back to git push...")
             all_pushed = True
