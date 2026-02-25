@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-PR Stack Fixer - Automatically monitors and fixes CI failures and review comments
-for a stack of PRs managed by Aviator CLI (av).
+Hardie - A meta-agent that autonomously fixes and hardens your PRs and PR stacks.
 
 Usage:
-    python pr_stack_fixer.py [options]
+    python hardie.py [options]
 
 Options:
-    --poll-interval SECONDS   Polling interval (default: 60)
+    --poll-interval SECONDS   Polling interval (default: 90)
     --max-iterations N        Max fix attempts per issue (default: 3)
     --dry-run                 Don't commit/push, just show what would happen
     --ai-cmd CMD              AI command to use (default: auggie)
-    --av-cmd CMD              Aviator CLI path
     --repo-dir DIR            Repository directory (default: current)
     --once                    Run once and exit
     --status                  Show status and exit
     --verbose, -v             Verbose output
+    --setup                   Install dependencies and exit
 """
 
 from __future__ import annotations
@@ -42,6 +41,100 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+def ensure_dependencies() -> bool:
+    """
+    Check and install required dependencies on first run.
+    Returns True if all dependencies are available, False otherwise.
+    """
+    # Optional Python packages (for enhanced functionality)
+    optional_packages = {
+        'requests': 'requests',
+        'browser_cookie3': 'browser-cookie3',
+    }
+
+    missing_packages = []
+    for module_name, pip_name in optional_packages.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing_packages.append(pip_name)
+
+    if missing_packages:
+        print(f"🔧 Installing optional Python packages: {', '.join(missing_packages)}")
+        try:
+            subprocess.check_call(
+                [sys.executable, '-m', 'pip', 'install', '--quiet'] + missing_packages,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print("✅ Python packages installed successfully")
+        except subprocess.CalledProcessError:
+            print("⚠️  Could not install optional packages (Buildkite cookie-based log fetching may not work)")
+
+    # Check required CLI tools
+    required_tools = {
+        'gh': {
+            'name': 'GitHub CLI',
+            'checks': [['gh', '--version']],
+            'install': 'brew install gh && gh auth login',
+            'url': 'https://cli.github.com/',
+        },
+        'git-branchless': {
+            'name': 'git-branchless',
+            # Check multiple possible locations (brew, cargo, direct)
+            'checks': [
+                ['git', 'branchless', '--help'],
+                ['git-branchless', '--help'],
+                [os.path.expanduser('~/.cargo/bin/git-branchless'), '--help'],
+            ],
+            'install': 'brew install git-branchless  # or: cargo install git-branchless',
+            'url': 'https://github.com/arxanas/git-branchless',
+        },
+    }
+
+    missing_tools = []
+    for tool_id, info in required_tools.items():
+        found = False
+        for check_cmd in info['checks']:
+            try:
+                subprocess.run(
+                    check_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                found = True
+                break
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+        if not found:
+            missing_tools.append(info)
+
+    if missing_tools:
+        print("\n❌ Missing required tools:\n")
+        for tool in missing_tools:
+            print(f"  • {tool['name']}")
+            print(f"    Install: {tool['install']}")
+            print(f"    More info: {tool['url']}\n")
+        return False
+
+    return True
+
+
+def run_setup() -> None:
+    """Run interactive setup to install all dependencies."""
+    print("🛡️  Hardie Setup\n")
+    print("Checking dependencies...\n")
+
+    if ensure_dependencies():
+        print("\n✅ All dependencies are installed!")
+        print("\nYou're ready to run Hardie:")
+        print("  python hardie.py --repo-dir /path/to/repo --ai-cmd auggie --verbose")
+    else:
+        print("\n⚠️  Please install the missing tools above, then run setup again.")
+        sys.exit(1)
 
 # ANSI colors
 class Colors:
@@ -1888,22 +1981,25 @@ This information is embedded by the av CLI when creating PRs to track the status
                 time.sleep(self.config.poll_interval)
 
 
-def parse_args() -> Config:
-    """Parse command line arguments."""
+def parse_args() -> tuple[Config, bool]:
+    """Parse command line arguments. Returns (config, is_setup_mode)."""
     parser = argparse.ArgumentParser(
-        description="Automatically monitor and fix CI failures and review comments for PR stacks",
+        description="🛡️ Hardie - Autonomously fix and harden your PRs and PR stacks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  %(prog)s --setup                     Install dependencies
   %(prog)s --status                    Show current stack status
   %(prog)s --once --dry-run            Run once in dry-run mode
   %(prog)s --poll-interval 120         Check every 2 minutes
-  %(prog)s --ai-cmd aider              Use aider instead of augie
+  %(prog)s --ai-cmd aider              Use aider instead of auggie
         """
     )
 
-    parser.add_argument("--poll-interval", type=int, default=60,
-                        help="Polling interval in seconds (default: 60)")
+    parser.add_argument("--setup", action="store_true",
+                        help="Install dependencies and exit")
+    parser.add_argument("--poll-interval", type=int, default=90,
+                        help="Polling interval in seconds (default: 90)")
     parser.add_argument("--max-iterations", type=int, default=3,
                         help="Max fix attempts per issue (default: 3)")
     parser.add_argument("--dry-run", action="store_true",
@@ -1925,6 +2021,10 @@ Examples:
 
     args = parser.parse_args()
 
+    # Handle setup mode
+    if args.setup:
+        return Config(), True
+
     run_mode = "loop"
     if args.status:
         run_mode = "status"
@@ -1942,12 +2042,22 @@ Examples:
         repo_dir=args.repo_dir,
         run_mode=run_mode,
         verbose=args.verbose,
-    )
+    ), False
 
 
 def main():
     """Main entry point."""
-    config = parse_args()
+    config, is_setup = parse_args()
+
+    # Handle setup mode
+    if is_setup:
+        run_setup()
+        return
+
+    # Auto-check dependencies on first run (silent unless issues)
+    if not ensure_dependencies():
+        print("\n💡 Run 'python hardie.py --setup' for installation help.\n")
+        sys.exit(1)
 
     # Change to repo directory
     os.chdir(config.repo_dir)

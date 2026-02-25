@@ -6,23 +6,84 @@ A meta-agent that autonomously fixes and hardens your PRs and PR stacks.
 
 For the full story, see [HARDIE.md](./HARDIE.md).
 
-## Quick Start
+---
+
+## Getting Started
+
+### Step 1: Install Prerequisites
+
+Hardie will auto-install Python dependencies when you first run it, but you need these tools installed:
 
 ```bash
-# Run on your current PR stack
-python3 hardie.py --repo-dir /path/to/your/repo --ai-cmd auggie --verbose
+# 1. GitHub CLI (required)
+brew install gh
+gh auth login
 
-# Check status only
+# 2. git-branchless (required for PR stacking)
+brew install git-branchless
+# Then initialize in your repo:
+cd /path/to/your/repo
+git branchless init
+
+# 3. An AI CLI (required) - pick one:
+# Option A: Augment Code CLI (auggie)
+# Install from: https://www.augmentcode.com/
+
+# Option B: Aider
+pip install aider-chat
+
+# Option C: Any CLI that accepts a prompt file
+```
+
+### Step 2: Clone Hardie
+
+```bash
+git clone https://github.com/hakanalpaydd/hardie.git
+cd hardie
+```
+
+### Step 3: Create Your PR Stack
+
+In your target repo, create a stack of PRs using git-branchless:
+
+```bash
+cd /path/to/your/repo
+
+# Create your feature branches
+git checkout -b feature/part-1
+# ... make changes, commit ...
+git push -u origin feature/part-1
+gh pr create --title "Part 1: ..." --base main
+
+git checkout -b feature/part-2
+# ... make changes, commit ...
+git push -u origin feature/part-2
+gh pr create --title "Part 2: ..." --base feature/part-1
+```
+
+### Step 4: Run Hardie
+
+```bash
+# From the hardie directory, point it at your repo
+python3 hardie.py \
+  --repo-dir /path/to/your/repo \
+  --ai-cmd auggie \
+  --verbose
+
+# Or just check the current status
 python3 hardie.py --repo-dir /path/to/your/repo --status
 ```
 
-## Requirements
+### Step 5: Walk Away
 
-- Python 3.8+
-- `gh` - GitHub CLI (authenticated)
-- `git-branchless` - For intelligent restacking ([install](https://github.com/arxanas/git-branchless))
-- An AI CLI (e.g., `auggie`, `aider`, `cursor`)
-- Optional: `bk` CLI for Buildkite log fetching
+Hardie will now:
+1. Monitor all PRs in your stack
+2. Fix CI failures (bottom-up)
+3. Address Copilot review comments
+4. Restack and push automatically
+5. Repeat until everything is green ✅
+
+---
 
 ## Options
 
@@ -35,23 +96,59 @@ python3 hardie.py --repo-dir /path/to/your/repo --status
 | `--verbose, -v` | Verbose output | false |
 | `--status` | Show status and exit | - |
 | `--dry-run` | Don't make changes | false |
+| `--once` | Run one iteration and exit | false |
+
+---
 
 ## How It Works
 
-1. **CI-First Priority**: Scans all PRs bottom-to-top, fixes lowest failing PR first
-2. **Fetch Logs**: Gets actual build errors from Buildkite
-3. **AI Fix**: Invokes your AI agent with full context
-4. **Restack & Push**: Uses git-branchless for intelligent restacking
-5. **Address Comments**: Fixes or dismisses Copilot/human review comments
-6. **Repeat**: Waits for CI, then loops
+```
+┌─────────────────────────────────────────────────────────┐
+│                    HARDIE LOOP                          │
+├─────────────────────────────────────────────────────────┤
+│  1. Scan all PRs in stack (bottom → top)                │
+│  2. Find first PR with CI failure                       │
+│  3. Fetch build logs from Buildkite                     │
+│  4. Invoke AI agent with full context                   │
+│  5. Commit fixes, restack with git-branchless           │
+│  6. Push all affected branches                          │
+│  7. If all CI green → address Copilot comments          │
+│  8. Wait for CI, repeat                                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Troubleshooting
+
+**"gh: command not found"**
+```bash
+brew install gh && gh auth login
+```
+
+**"git-branchless: command not found"**
+```bash
+brew install git-branchless
+cd /path/to/repo && git branchless init
+```
+
+**"No PRs found in stack"**
+Make sure you're on a branch that has open PRs, and that git-branchless is initialized.
+
+**AI agent not making changes**
+Try running with `--verbose` to see the full prompt being sent to the AI.
+
+---
 
 ## Current Status
 
 ⚠️ **Super Alpha** - Built for DoorDash's web-next repo but designed to be extensible.
 
+---
+
 ## Files
 
-- `hardie.py` - Main script (was `pr_stack_fixer.py`)
+- `hardie.py` - Main script
 - `HARDIE.md` - Full documentation and motivation
-- `skills/` - Skill docs for AI agents (CI fixing, etc.)
+- `skills/` - Skill docs for AI agents (CI fixing patterns, etc.)
 
