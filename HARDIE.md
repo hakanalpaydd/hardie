@@ -39,6 +39,20 @@ What if you could just:
 
 ---
 
+## "Always Have an Agent Running"
+
+This philosophy isn't unique to Hardie. **Mitchell Hashimoto** (founder of HashiCorp, creator of Vagrant, Terraform, Consul, Vault, and more) recently shared his new rule for building software:
+
+> *"Always have an agent running in the background doing something. If I'm coding, I want an agent planning. If they're coding, I want to be reviewing."*
+>
+> *He kicks off tasks before leaving the house — research, edge-case analysis, library comparisons — so work progresses while he drives or is away.*
+>
+> — [The Pragmatic Engineer](https://open.substack.com/pub/pragmaticengineer/p/mitchell-hashimoto)
+
+Hardie embodies this principle: while you're focused on your next task, Hardie is in the background fixing CI failures, addressing review comments, and hardening your PRs. Your work progresses even when you're not actively thinking about it.
+
+---
+
 ## Why PR Stacking is Worth It
 
 Despite the maintenance overhead, stacked PRs are incredibly valuable for software development:
@@ -106,12 +120,19 @@ If you're interested in expanding Hardie to your repo, let's talk!
 ## Getting Started
 
 ```bash
-# From the web-next repo root
-python3 tools/pr-stack-fixer/pr_stack_fixer.py \
-  --repo-dir /path/to/web-next \
+# Clone Hardie
+git clone https://github.com/hakanalpaydd/hardie.git
+cd hardie
+
+# Run it against your repo
+python3 -m hardie \
+  --repo-dir /path/to/your/repo \
   --ai-cmd auggie \
   --poll-interval 90 \
   --verbose
+
+# Or check status first
+python3 -m hardie --repo-dir /path/to/your/repo --status
 ```
 
 Then walk away. Hardie will keep working until your stack is green and comment-free.
