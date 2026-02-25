@@ -65,13 +65,16 @@ gh pr create --title "Part 2: ..." --base feature/part-1
 
 ```bash
 # From the hardie directory, point it at your repo
-python3 hardie.py \
+python3 -m hardie \
   --repo-dir /path/to/your/repo \
   --ai-cmd auggie \
   --verbose
 
 # Or just check the current status
-python3 hardie.py --repo-dir /path/to/your/repo --status
+python3 -m hardie --repo-dir /path/to/your/repo --status
+
+# Setup mode to verify dependencies
+python3 -m hardie --setup
 ```
 
 ### Step 5: Walk Away
@@ -148,7 +151,16 @@ Try running with `--verbose` to see the full prompt being sent to the AI.
 
 ## Files
 
-- `hardie.py` - Main script
+- `hardie/` - Main package (Python module)
+  - `cli.py` - Command-line interface
+  - `core.py` - Main PRStackFixer orchestration
+  - `github.py` - GitHub/Copilot API client
+  - `git.py` - Git/branchless operations
+  - `ai.py` - AI agent invocation
+  - `buildkite.py` - Buildkite log fetching
+  - `config.py` - Configuration dataclasses
+  - `setup.py` - Dependency checking
+  - `utils.py` - Logging utilities
 - `HARDIE.md` - Full documentation and motivation
 - `skills/` - Skill docs for AI agents (CI fixing patterns, etc.)
 
